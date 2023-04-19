@@ -34,6 +34,14 @@ from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import PythonCodeTextSplitter
 from langchain.vectorstores import Pinecone
 from langchain.document_loaders import TextLoader
+import os
+import json
+def save_json(filepath, payload):
+    with open(filepath, 'w', encoding='utf-8') as outfile:
+        json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
+def load_json(filepath):
+    with open(filepath, 'r', encoding='utf-8') as infile:
+        return json.load(infile)
 
 #### Countdown function
 def countdown(seconds):
@@ -67,72 +75,82 @@ import re
 from urllib.parse import urlparse
 
 url = input("Enter a website to extract the URL's from: ")
-main_page = requests.get(url)
-main_soup = BeautifulSoup(main_page.content, "html.parser")
+# replace all '/'':' and '.' in the url to get a string as filename
+format_file = ".json"
+filename=url.replace('/','_').replace(':','_').replace('.','_')+ format_file
 
-# Extract the domain of the main URL
-main_domain = urlparse(url).netloc
-
-# Find all the subpage links
-subpage_links = []
-for link in tqdm(main_soup.find_all("a", href=True)):
-    href = link["href"]
-    # Extract the domain of the current link
-    link_domain = urlparse(href).netloc
+file_path = f'resources/{filename}'
+if not os.path.exists(file_path):
     
-    if link_domain and link_domain != main_domain:
-        # Ignore links with different domains
-        continue
+    main_page = requests.get(url)
+    main_soup = BeautifulSoup(main_page.content, "html.parser")
 
-    if re.match(r'^http', href) is None:
-        subpage_links.append(url + href)
-    else:
-        subpage_links.append(href)
+    # Extract the domain of the main URL
+    main_domain = urlparse(url).netloc
+
+    # Find all the subpage links
+    subpage_links = []
+    for link in tqdm(main_soup.find_all("a", href=True)):
+        href = link["href"]
+        # Extract the domain of the current link
+        link_domain = urlparse(href).netloc
+        
+        if link_domain and link_domain != main_domain:
+            # Ignore links with different domains
+            continue
+
+        if re.match(r'^http', href) is None:
+            subpage_links.append(url + href)
+        else:
+            subpage_links.append(href)
 
 
-# Convert each subpage to text using html2text
-h = html2text.HTML2Text()
-h.ignore_links = True
-all_texts = []
-
-
-# Speedup downloads with aiohttp
-import aiohttp
-import asyncio
-
-async def download_page(link):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(link, ssl=False) as response:
-            content = await response.text()
-            return content
-
-async def convert_subpage_to_text(link, progress_bar):
-    try:
-        content = await download_page(link)
-        subpage_soup = BeautifulSoup(content, "html.parser")
-        text = h.handle(str(subpage_soup))
-        progress_bar.update(1)
-        return text
-    except Exception as e:
-        print(f"Error processing link {link}: {e}")
-
-async def download_and_convert_all(subpage_links):
+    # Convert each subpage to text using html2text
+    h = html2text.HTML2Text()
+    h.ignore_links = True
     all_texts = []
-    with tqdm(total=len(subpage_links), desc="Downloading and converting pages") as progress_bar:
-        tasks = [convert_subpage_to_text(link, progress_bar) for link in subpage_links]
-        all_texts = await asyncio.gather(*tasks)
-    return all_texts
 
-# Run the asynchronous download and conversion process
-all_texts = asyncio.run(download_and_convert_all(subpage_links))
+
+    # Speedup downloads with aiohttp
+    import aiohttp
+    import asyncio
+
+    async def download_page(link):
+        async with aiohttp.ClientSession() as session:
+            async with session.get(link, ssl=False) as response:
+                content = await response.text()
+                return content
+
+    async def convert_subpage_to_text(link, progress_bar):
+        try:
+            content = await download_page(link)
+            subpage_soup = BeautifulSoup(content, "html.parser")
+            text = h.handle(str(subpage_soup))
+            progress_bar.update(1)
+            return text
+        except Exception as e:
+            print(f"Error processing link {link}: {e}")
+
+    async def download_and_convert_all(subpage_links):
+        all_texts = []
+        with tqdm(total=len(subpage_links), desc="Downloading and converting pages") as progress_bar:
+            tasks = [convert_subpage_to_text(link, progress_bar) for link in subpage_links]
+            all_texts = await asyncio.gather(*tasks)
+        return all_texts
+
+    # Run the asynchronous download and conversion process
+    all_texts = asyncio.run(download_and_convert_all(subpage_links))
+    save_json('resources/%s' % filename, all_texts)
+else:
+    all_texts = load_json('resources/%s' % filename)
+    print(f"The file '{file_path}' already exists, skipping download and conversion.")
 
 
 
 # Check if all_texts is not empty before trying to access its elements
-if len(all_texts) > 0:
-    print(all_texts[0])
-else:
+if not len(all_texts) > 0:
     print("No texts found in all_texts list.")
+    exit()
 
 
 # Initialize the text splitter
@@ -149,27 +167,6 @@ for text in tqdm(all_texts, desc="Splitting texts"):
     split_texts.extend(split_docs)
 
 print(f"Number of split documents: {len(split_texts)}")
-
-
-
-#### Load langchain github repo
-#LangChainDocPath = "./LangChainData/T1"
-#if os.path.isdir(LangChainDocPath):
-    # Directory already exists, skip cloning or update existing clone
-    ##repo = Repo(LangChainDocPath)
-    ##print("Updating repository...")
-    ##repo.remotes.origin.pull()
-#    print("Repository updated!")
-#else:
-    # Directory does not exist, clone the repository
-#    print("Cloning repository...")
-#    repo = Repo.clone_from("https://github.com/hwchase17/langchain", to_path=LangChainDocPath)
-
-#print("loading started and it usually takes around 40 seconds")
-#countdown(40)
-#loader = GitLoader(repo_path=LangChainDocPath, branch="master")
-#data = loader.load()
-#print("data ready!")
 
 file_path = 'Env_variables.txt'
 api_keys = read_api_keys(file_path)
@@ -191,9 +188,8 @@ print(f"API loaded from {file_path}")
 #for doc in tqdm(data, desc="Loading and splitting documents"):
 #    split_docs = python_splitter.create_documents(doc.page_content)
 #    docs.extend(split_docs)
-print("Start embedding with OpenAI ada-002\n")
+print("embedding method is OpenAI ada-002\n")
 embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY, model="text-embedding-ada-002")
-print("Embedding done")
 choice = input("Please input 1 or 2 for 'pinecone' or 'faiss' to continue:")
 if choice == "1":
     print("Pinecone selected")
@@ -215,9 +211,10 @@ elif choice == "2":
     from langchain.vectorstores import FAISS
     from langchain.document_loaders import TextLoader
     # Initialize FAISS vector store
-    if os.path.exists(url):
+    format_file = "_index"
+    if os.path.exists(filename+format_file):
         print("Loading FAISS index from disk...")
-        docsearch = FAISS.load_local(url)
+        docsearch = FAISS.load_local(filename+format_file)
     else:
         print("Initializing FAISS vector store...")
         docsearch = FAISS.from_documents(split_texts, embeddings)

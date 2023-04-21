@@ -107,18 +107,20 @@ input()
 # Embed and upsert paragraphs
 last_index = 0  # Initialize last index to 0
 try:
-    with open('upsert_log.txt', 'r') as log_file:
+    with open('upsert.log', 'r') as log_file:
         last_index = int(log_file.readline().strip())
         print(f'Resuming upsert from index {last_index}...')
 except FileNotFoundError:
-    print('Starting new upsert process...')
-
+    with open('upsert.log', 'x') as log_file:
+        print('Starting new upsert process...')
+# Configure logging
+logging.basicConfig(filename='upsert.log', level=logging.INFO)
 for id, doc in tqdm(enumerate(split_docs), total=len(split_docs)):
     if id < last_index:
         continue  # Skip documents that have already been upserted
 
     text = doc['text']
-    doc_id = str(uuid.uuid4())
+    doc_id = doc['id']
     if len(text.strip()) > 0:  # Ignore empty paragraphs
         vector = ada_embedding(text)
         upsert_response = index.upsert(vectors=[(doc_id, vector, {"page_content": text})])

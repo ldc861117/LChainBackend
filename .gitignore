@@ -1,2 +1,3 @@
 Env_variables.txt
-*.json
+/resources
+*.log

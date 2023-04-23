@@ -35,7 +35,7 @@ def ada_embedding(content, engine='text-embedding-ada-002'):
 # Dictionary to store the progress of each request
 progress = {}
 
-@app.route('/index_dataset', methods=['POST'])
+@app.route('/upsert', methods=['POST'])
 def index_dataset():
     url = request.form.get('url', 'jamescalam/youtube-transcriptions')
 
@@ -69,28 +69,30 @@ def upsert_data(request_id, url):
     # Embed and upsert paragraphs
     upsert_paragraphs(request_id, split_docs)
 
-def process_data(data):
-    new_data = []  # this will store adjusted data
-    window = 20  # number of sentences to combine
-    stride = 2  # number of sentences to 'stride' over, used to create overlap
+def process_data(data, max_tokens=2000, window=20, stride=2):
+    new_data = []
+
     for i in tqdm(range(0, len(data), stride)):
-        i_end = min(len(data)-1, i+window)
-        if data[i]['title'] != data[i_end]['title']:
-            # in this case we skip this entry as we have start/end of two videos
-            continue
-        # create larger text chunk
+        i_end = min(len(data) - 1, i + window)
+
+        # Create larger text chunk
         text = ' '.join(data[i:i_end]['text'])
-        # add to adjusted data list
-        new_data.append({
-            'start': data[i]['start'],
-            'end': data[i_end]['end'],
-            'title': data[i]['title'],
-            'text': text,
-            'id': data[i]['id'],
-            'url': data[i]['url'],
-            'published': data[i]['published']
-        })
+
+        # Check if the combined text exceeds the max_tokens
+        if len(text.split()) > max_tokens:
+            continue
+
+        # Collect metadata
+        metadata = {}
+        for key in data[i].keys():
+            if key != 'text':
+                metadata[key] = data[i][key]
+
+        # Add to adjusted data list
+        new_data.append({**metadata, 'text': text})
+
     return new_data
+
 
 def upsert_paragraphs(request_id, split_docs):
     total_documents = len(split_docs)
@@ -99,19 +101,35 @@ def upsert_paragraphs(request_id, split_docs):
         "processed": 0,
         "percentage": 0
     }
+    # Check upload log for last index
+    last_index = 0  # Initialize last index to 0
+    try:
+        with open('upsert.log', 'r') as log_file:
+            last_log_line = log_file.readlines()[-1]  # Read the last line
+            last_index = int(last_log_line.split()[2]) + 1  # Extract the index and add 1
+            print(f'Resuming upsert from index {last_index}...')
+    except FileNotFoundError:
+        with open('upsert.log', 'x') as log_file:
+            print('Starting new upsert process...')
 
     # Embed and upsert paragraphs
-    for id, doc in enumerate(split_docs):
+    for id, doc in tqdm(enumerate(split_docs), total=len(split_docs)):
+        if id < last_index:
+            continue
+
         text = doc['text']
         doc_id = doc['id']
-        if len(text.strip()) > 0:  # Ignore empty paragraphs
-            vector = ada_embedding(text)
-            upsert_response = index.upsert(vectors=[(doc_id, vector, {"page_content": text})])
+        metadata = {k: v for k, v in doc.items() if k != 'text' and k != 'id'}
 
-        # Update the progress dictionary
-        progress[request_id]["processed"] = id + 1
-        progress[request_id]["percentage"] = round((id + 1) / total_documents * 100, 2)
+        if len(text.strip()) > 0:
+            vector = ada_embedding(text)
+            upsert_response = index.upsert(vectors=[(doc_id, vector, metadata)])
+
+            # Log successful upsert operation
+            logging.info(f'Upserted document {id} with ID {doc_id}')
+            last_index = id
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=4999)
+
 

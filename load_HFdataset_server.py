@@ -1,75 +1,78 @@
-import openai
-import pinecone
-import json
 import os
-from tqdm import tqdm  # Import the tqdm library for progress bars
-from datasets import load_dataset
+import threading
 import uuid
 import logging
+import json
+from tqdm import tqdm
+from datasets import load_dataset
+from flask import Flask, request, jsonify
 
+import openai
+import pinecone
 
-def save_json(filepath, payload):
-    with open(filepath, 'w', encoding='utf-8') as outfile:
-        json.dump(payload, outfile, ensure_ascii=False, sort_keys=True, indent=2)
-def load_json(filepath):
-    with open(filepath, 'r', encoding='utf-8') as infile:
-        return json.load(infile)
+app = Flask(__name__)
 
-#### Importing the API keys from a text file
-def read_api_keys(file_path):
-    api_keys = {}
-
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
-        for line in lines:
-            key, value = line.split('=')
-            key = key.strip()
-            value = value.strip()
-            api_keys[key] = value
-
-    return api_keys
-
-
-file_path = 'Env_variables.txt'
-api_keys = read_api_keys(file_path)
-
-OPENAI_API_KEY = api_keys['OPENAI_API_KEY']
-PINECONE_API_KEY = api_keys['PINECONE_API_KEY']
-PINECONE_ENV = api_keys['PINECONE_ENV']
-PINECONE_INDEX_NAME = api_keys['PINECONE_INDEX_NAME']
+# Read API keys from environment variables
+OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
+PINECONE_API_KEY = os.environ['PINECONE_API_KEY']
+PINECONE_ENV = os.environ['PINECONE_ENV']
+PINECONE_INDEX_NAME = os.environ['PINECONE_INDEX_NAME']
 
 # Initialize OpenAI
 openai.api_key = OPENAI_API_KEY
+
+# Initialize Pinecone
+pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+
+# Create a Pinecone index
+index = pinecone.Index(PINECONE_INDEX_NAME)
 
 def ada_embedding(content, engine='text-embedding-ada-002'):
     response = openai.Embedding.create(input=content, engine=engine)
     vector = response['data'][0]['embedding']  # this is a normal list
     return vector
 
-url = input("Enter a url of huggingface dataset: ")
-if url=="":
-    url="jamescalam/youtube-transcriptions"
-    print("Downloading default dataset...")
+# Dictionary to store the progress of each request
+progress = {}
 
+@app.route('/index_dataset', methods=['POST'])
+def index_dataset():
+    url = request.form.get('url', 'jamescalam/youtube-transcriptions')
 
-# first download the dataset
-data = load_dataset(
-    url,
-    split='train'
-)
+    # Generate a unique request ID
+    request_id = str(uuid.uuid4())
 
-format_file = ".json"
-filename=url.replace('/','_').replace(':','_').replace('.','_')+ format_file
-file_path = f'resources/{filename}'
-if os.path.exists(file_path):
-    print("File already exists!")
-    new_data=load_json(file_path)
-else:
+    # Start a new thread for the upsert process
+    upsert_thread = threading.Thread(target=upsert_data, args=(request_id, url))
+    upsert_thread.start()
+
+    return jsonify({"status": "success", "message": "Indexing started.", "request_id": request_id})
+
+@app.route('/progress/<request_id>', methods=['GET'])
+def get_progress(request_id):
+    if request_id in progress:
+        return jsonify({"status": "success", "progress": progress[request_id]})
+    else:
+        return jsonify({"status": "error", "message": "Invalid request ID."})
+
+def upsert_data(request_id, url):
+    # first download the dataset
+    data = load_dataset(
+        url,
+        split='train'
+    )
+
+    # process the data
+    new_data = process_data(data)
+    split_docs = new_data
+
+    # Embed and upsert paragraphs
+    upsert_paragraphs(request_id, split_docs)
+
+def process_data(data):
     new_data = []  # this will store adjusted data
-    split_docs = []  # this will store the split documents
     window = 20  # number of sentences to combine
     stride = 2  # number of sentences to 'stride' over, used to create overlap
-    print("Adjusting data...")
     for i in tqdm(range(0, len(data), stride)):
         i_end = min(len(data)-1, i+window)
         if data[i]['title'] != data[i_end]['title']:
@@ -87,50 +90,28 @@ else:
             'url': data[i]['url'],
             'published': data[i]['published']
         })
-    save_json(file_path, new_data)
-    print("File saved!")
-split_docs=new_data
+    return new_data
 
-print("text in the middle of the dataset:")
-print(split_docs[int(len(split_docs)/2)])
-# Initialize Pinecone
-pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+def upsert_paragraphs(request_id, split_docs):
+    total_documents = len(split_docs)
+    progress[request_id] = {
+        "total": total_documents,
+        "processed": 0,
+        "percentage": 0
+    }
 
-# Create a Pinecone index
-index_name = PINECONE_INDEX_NAME
-index = pinecone.Index(index_name)
-print("total number of documents:", len(split_docs))
-print("Press enter to continue...")
-input()
-# Embed and upsert paragraphs
+    # Embed and upsert paragraphs
+    for id, doc in enumerate(split_docs):
+        text = doc['text']
+        doc_id = doc['id']
+        if len(text.strip()) > 0:  # Ignore empty paragraphs
+            vector = ada_embedding(text)
+            upsert_response = index.upsert(vectors=[(doc_id, vector, {"page_content": text})])
 
-# Embed and upsert paragraphs
-last_index = 0  # Initialize last index to 0
-try:
-    with open('upsert.log', 'r') as log_file:
-        last_index = int(log_file.readline().strip())
-        print(f'Resuming upsert from index {last_index}...')
-except FileNotFoundError:
-    with open('upsert.log', 'x') as log_file:
-        print('Starting new upsert process...')
-# Configure logging
-logging.basicConfig(filename='upsert.log', level=logging.INFO)
-for id, doc in tqdm(enumerate(split_docs), total=len(split_docs)):
-    if id < last_index:
-        continue  # Skip documents that have already been upserted
+        # Update the progress dictionary
+        progress[request_id]["processed"] = id + 1
+        progress[request_id]["percentage"] = round((id + 1) / total_documents * 100, 2)
 
-    text = doc['text']
-    doc_id = doc['id']
-    if len(text.strip()) > 0:  # Ignore empty paragraphs
-        vector = ada_embedding(text)
-        upsert_response = index.upsert(vectors=[(doc_id, vector, {"page_content": text})])
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=5000)
 
-        # Log successful upsert operation
-        logging.info(f'Upserted document {id} with ID {doc_id}')
-        last_index = id
-
-# Write the last index to the log file
-with open('upsert_log.txt', 'w') as log_file:
-    log_file.write(str(last_index))
-
-print("Done!")

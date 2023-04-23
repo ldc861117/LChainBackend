@@ -108,7 +108,7 @@ input()
 last_index = 0  # Initialize last index to 0
 try:
     with open('upsert.log', 'r') as log_file:
-        last_index = int(log_file.readline().strip())
+        last_index = int(log_file.readline())
         print(f'Resuming upsert from index {last_index}...')
 except FileNotFoundError:
     with open('upsert.log', 'x') as log_file:

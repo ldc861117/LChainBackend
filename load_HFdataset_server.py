@@ -6,7 +6,7 @@ import json
 from tqdm import tqdm
 from datasets import load_dataset
 from flask import Flask, request, jsonify
-
+import tiktoken
 import openai
 import pinecone
 
@@ -26,6 +26,8 @@ pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
 
 # Create a Pinecone index
 index = pinecone.Index(PINECONE_INDEX_NAME)
+# Tokenizer for ada-002
+encoding = tiktoken.encoding_for_model("text-embedding-ada-002")
 
 def ada_embedding(content, engine='text-embedding-ada-002'):
     response = openai.Embedding.create(input=content, engine=engine)
@@ -71,15 +73,32 @@ def upsert_data(request_id, url):
 
 def process_data(data, max_tokens=2000, window=20, stride=2):
     new_data = []
+    logging.getLogger('processed').setLevel(logging.INFO)
+    
+    # Check the last processed index from the log file
+    last_processed_index = 0
+    try:
+        with open('resources/processed.log', 'r') as log_file:
+            last_log_line = log_file.readlines()[-1]  # Read the last line
+            last_processed_index = int(last_log_line.split()[2]) + 1  # Extract the index and add 1
+            print(f'Resuming processing from index {last_processed_index}...')
+    except FileNotFoundError:
+        with open('resources/processed.log', 'x') as log_file:
+            print('Starting new processing...')
+    logging.getLogger('processed').addHandler(logging.FileHandler('resources/processed.log'))
+    # If the processed data file exists, load it
+    if os.path.exists('resources/processed_data.json'):
+        with open('resources/processed_data.json', 'r') as json_file:
+            new_data = json.load(json_file)
 
-    for i in tqdm(range(0, len(data), stride)):
+    for i in tqdm(range(last_processed_index, len(data), stride)):
         i_end = min(len(data) - 1, i + window)
 
         # Create larger text chunk
         text = ' '.join(data[i:i_end]['text'])
 
         # Check if the combined text exceeds the max_tokens
-        if len(text.split()) > max_tokens:
+        if len(encoding.encode(text)) > max_tokens:
             continue
 
         # Collect metadata
@@ -90,6 +109,12 @@ def process_data(data, max_tokens=2000, window=20, stride=2):
 
         # Add to adjusted data list
         new_data.append({**metadata, 'text': text})
+
+        # Save the processed data
+        with open('resources/processed_data.json', 'w') as json_file:
+            json.dump(new_data, json_file)
+        
+        logging.getLogger('processed').info(f'Processed document {i} with ID {data[i]["id"]}')
 
     return new_data
 
@@ -104,12 +129,12 @@ def upsert_paragraphs(request_id, split_docs):
     # Check upload log for last index
     last_index = 0  # Initialize last index to 0
     try:
-        with open('upsert.log', 'r') as log_file:
+        with open('resources/upsert.log', 'r') as log_file:
             last_log_line = log_file.readlines()[-1]  # Read the last line
             last_index = int(last_log_line.split()[2]) + 1  # Extract the index and add 1
             print(f'Resuming upsert from index {last_index}...')
     except FileNotFoundError:
-        with open('upsert.log', 'x') as log_file:
+        with open('resources/upsert.log', 'x') as log_file:
             print('Starting new upsert process...')
 
     # Embed and upsert paragraphs

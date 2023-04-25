@@ -13,10 +13,10 @@ import pinecone
 app = Flask(__name__)
 
 # Read API keys from environment variables
-OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
-PINECONE_API_KEY = os.environ['PINECONE_API_KEY']
-PINECONE_ENV = os.environ['PINECONE_ENV']
-PINECONE_INDEX_NAME = os.environ['PINECONE_INDEX_NAME']
+OPENAI_API_KEY = os.environ.get['OPENAI_API_KEY']
+PINECONE_API_KEY = os.environ.get['PINECONE_API_KEY']
+PINECONE_ENV = os.environ.get['PINECONE_ENV']
+PINECONE_INDEX_NAME = os.environ.get['PINECONE_INDEX_NAME']
 
 # Initialize OpenAI
 openai.api_key = OPENAI_API_KEY

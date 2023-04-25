@@ -47,11 +47,12 @@ def index_dataset():
     # Start a new thread for the upsert process
     upsert_thread = threading.Thread(target=upsert_data, args=(request_id, url))
     upsert_thread.start()
-
+    print(f"Starting indexing process. Progress dictionary: {progress}")
     return jsonify({"status": "success", "message": "Indexing started.", "request_id": request_id})
 
 @app.route('/progress/<request_id>', methods=['GET'])
 def get_progress(request_id):
+    print(f"Checking progress for request ID {request_id}. Progress dictionary: {progress}")
     if request_id in progress:
         return jsonify({"status": "success", "progress": progress[request_id]})
     else:
